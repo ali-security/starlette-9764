@@ -235,7 +235,12 @@ class Request(HTTPConnection):
             self._json = json.loads(body)
         return self._json
 
-    async def form(self) -> FormData:
+    async def form(
+        self,
+        *,
+        max_files: typing.Union[int, float] = 1000,
+        max_fields: typing.Union[int, float] = 1000,
+    ) -> FormData:
         if not hasattr(self, "_form"):
             assert (
                 parse_options_header is not None
@@ -243,7 +248,12 @@ class Request(HTTPConnection):
             content_type_header = self.headers.get("Content-Type")
             content_type, options = parse_options_header(content_type_header)
             if content_type == b"multipart/form-data":
-                multipart_parser = MultiPartParser(self.headers, self.stream())
+                multipart_parser = MultiPartParser(
+                    self.headers,
+                    self.stream(),
+                    max_files=max_files,
+                    max_fields=max_fields,
+                )
                 self._form = await multipart_parser.parse()
             elif content_type == b"application/x-www-form-urlencoded":
                 form_parser = FormParser(self.headers, self.stream())

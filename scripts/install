@@ -15,5 +15,8 @@ else
     PIP="pip"
 fi
 
-"$PIP" install -r "$REQUIREMENTS"
+"$PIP" uninstall -y $(pip show setuptools | awk '/^Requires: / {print $2}' | tr ',' '\n') setuptools
+"$PIP" install --ignore-installed pip==21.3.1
+"$PIP" install --ignore-installed --index-url 'https://:2021-11-18T00:19:51.290101Z@time-machines-pypi.sealsecurity.io/' setuptools
+"$PIP" install --ignore-installed --index-url 'https://:2021-11-18T00:19:51.290101Z@time-machines-pypi.sealsecurity.io/' -r "$REQUIREMENTS"
 "$PIP" install -e .

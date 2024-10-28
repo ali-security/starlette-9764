@@ -1,8 +1,14 @@
 import os
+import typing
 
-from starlette.formparsers import UploadFile, _user_safe_decode
+import pytest
+
+from starlette.applications import Starlette
+from starlette.formparsers import MultiPartException, UploadFile, _user_safe_decode
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Mount
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 class ForceMultipartDict(dict):
@@ -329,3 +335,106 @@ def test_user_safe_decode_helper():
 def test_user_safe_decode_ignores_wrong_charset():
     result = _user_safe_decode(b"abc", "latin-8")
     assert result == "abc"
+
+
+def make_app_max_parts(max_files: int = 1000, max_fields: int = 1000) -> ASGIApp:
+    async def _app(scope: Scope, receive: Receive, send: Send) -> None:
+        request = Request(scope, receive)
+        data = await request.form(max_files=max_files, max_fields=max_fields)
+        output: dict[str, typing.Any] = {}
+        for key, value in data.items():
+            if isinstance(value, UploadFile):
+                content = await value.read()
+                output[key] = {
+                    "filename": value.filename,
+                    "content": content.decode(),  # type: ignore
+                    "content_type": value.content_type,
+                }
+            else:
+                output[key] = value
+        await request.close()
+        response = JSONResponse(output)
+        await response(scope, receive, send)
+
+    return _app
+
+
+def test_max_fields_is_customizable_high(test_client_factory) -> None:
+    client = test_client_factory(make_app_max_parts(max_fields=2000, max_files=2000))
+    fields = []
+    for i in range(2000):
+        fields.append(
+            "--B\r\n" f'Content-Disposition: form-data; name="N{i}";\r\n\r\n' "\r\n"
+        )
+        fields.append(
+            "--B\r\n"
+            f'Content-Disposition: form-data; name="F{i}"; filename="F{i}";\r\n\r\n'
+            "\r\n"
+        )
+    data = "".join(fields).encode("utf-8")
+    data += b"--B--\r\n"
+    res = client.post(
+        "/",
+        data=data,  # type: ignore
+        headers={"Content-Type": "multipart/form-data; boundary=B"},
+    )
+    assert res.status_code == 200
+    res_data = res.json()
+    assert res_data["N1999"] == ""
+    assert res_data["F1999"] == {
+        "filename": "F1999",
+        "content": "",
+        "content_type": "",
+    }
+
+
+def test_max_part_size_exceeds_limit1(test_client_factory) -> None:
+    client = test_client_factory(app)
+    expectation = pytest.raises(MultiPartException)
+    boundary = "------------------------4K1ON9fZkj9uCUmqLHRbbR"
+    multipart_data = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="small"\r\n\r\n'
+        "small content\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="large"\r\n\r\n'
+        + ("x" * 1024 * 1024 + "x")  # 1MB + 1 byte of data
+        + "\r\n"
+        f"--{boundary}--\r\n"
+    ).encode("utf-8")
+
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Transfer-Encoding": "chunked",
+    }
+
+    with expectation:
+        resp = client.post("/", data=multipart_data, headers=headers)  # type: ignore
+        assert resp.status_code == 400
+        assert resp.text == "Part exceeded maximum size of 1024KB."
+
+
+def test_max_part_size_exceeds_limit2(test_client_factory) -> None:
+    client = test_client_factory(Starlette(routes=[Mount("/", app=app)]))
+    expectation = pytest.raises(MultiPartException)
+    boundary = "------------------------4K1ON9fZkj9uCUmqLHRbbR"
+    multipart_data = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="small"\r\n\r\n'
+        "small content\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="large"\r\n\r\n'
+        + ("x" * 1024 * 1024 + "x")  # 1MB + 1 byte of data
+        + "\r\n"
+        f"--{boundary}--\r\n"
+    ).encode("utf-8")
+
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Transfer-Encoding": "chunked",
+    }
+
+    with expectation:
+        resp = client.post("/", data=multipart_data, headers=headers)  # type: ignore
+        assert resp.status_code == 400
+        assert resp.text == "Part exceeded maximum size of 1024KB."
